@@ -1,18 +1,8 @@
 defmodule DiscordBot do
-  @moduledoc """
-  Documentation for `DiscordBot`.
-  """
+  use Application
 
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> DiscordBot.hello()
-      :world
-
-  """
-  def hello do
-    :world
+  def start(_type, _args) do
+    children = [DiscordBot.Consumer, DiscordBot.RssReader]
+    Supervisor.start_link(children, strategy: :one_for_one)
   end
 end
