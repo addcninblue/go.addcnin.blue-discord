@@ -1,8 +1,10 @@
 defmodule DiscordBot.RssReader do
-  use GenServer
+  alias DiscordBot.{Schema.Feed, Repo}
   alias Nostrum.Api
+  import Ecto.Query
+  require Logger
+  use GenServer
 
-  @links Application.fetch_env!(:discord_bot, :links)
   @timeout 5 * 60 * 1000
 
   def start_link(_init) do
@@ -11,7 +13,6 @@ defmodule DiscordBot.RssReader do
 
   @impl true
   def init(_init) do
-    pull_rss(nil)
     {:ok, nil}
   end
 
@@ -23,37 +24,38 @@ defmodule DiscordBot.RssReader do
   end
 
   def pull_rss(_state) do
-    for {channel, links} <- @links do
+    links_grouped = Repo.all(from(f in Feed)) |> Enum.group_by(& &1.channel)
+
+    for {channel, links} <- links_grouped do
       for link <- links do
-        {:ok, %HTTPoison.Response{body: body}} = HTTPoison.get(link)
+        {:ok, %HTTPoison.Response{body: body}} = HTTPoison.get(link.url)
         {:ok, feed, _} = FeederEx.parse(body)
 
         entries =
           feed.entries
           |> Enum.filter(fn entry ->
-            case entry.updated do
-              nil ->
+            # (Ab)using Elixir's `with` special form to try many different
+            # parse methods until one succeeds. This means the "happy path"
+            # is failure and the "exception path" is success.
+            with true <- String.valid?(entry.updated),
+                 {:error, _} <- Timex.parse(entry.updated, "{RFC822}"),
+                 {:error, _} <- Timex.parse(entry.updated, "{RFC1123}"),
+                 {:error, _} <- Timex.parse(entry.updated, "{RFC3339}") do
+              Logger.warn("Unable to parse timestamp #{entry.updated} for link #{link.url}")
+              false
+            else
+              # String is not valid
+              false ->
                 false
 
-              _ ->
-                case Timex.parse(entry.updated, "{RFC1123}") do
-                  {:ok, time} ->
-                    subtracted =
-                      Timex.subtract(
-                        Timex.now(),
-                        Timex.Duration.from_milliseconds(@timeout + 1 * 1000)
-                      )
+              {:ok, time} ->
+                subtracted =
+                  Timex.subtract(
+                    Timex.now(),
+                    Timex.Duration.from_milliseconds(@timeout + 1 * 1000)
+                  )
 
-                    IO.inspect(subtracted)
-                    IO.inspect(time)
-
-                    result = Timex.before?(subtracted, time)
-                    IO.inspect(result)
-                    result
-
-                  _ ->
-                    false
-                end
+                Timex.before?(subtracted, time)
             end
           end)
           |> Enum.filter(&(!is_nil(&1.title)))
